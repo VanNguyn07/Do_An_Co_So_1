@@ -5,8 +5,12 @@ import LinkTasksAndCal.LinkTasksAndCalModel;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.collections.FXCollections;
+import javafx.collections.ListChangeListener;
 import javafx.collections.ObservableList;
+import javafx.collections.transformation.FilteredList;
+import javafx.collections.transformation.SortedList;
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -24,6 +28,7 @@ import javafx.stage.Stage;
 import javafx.util.Duration;
 
 import java.sql.SQLException;
+import java.text.Normalizer;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -32,11 +37,15 @@ public class Tasks extends Application {
     public static ObservableList<LinkTasksAndCalModel> sharedTasks = FXCollections.observableArrayList();
     private static Stage mainStage;
     private ListView<LinkTasksAndCalModel> taskListView = new ListView<>(sharedTasks);
+    private FilteredList<LinkTasksAndCalModel> filteredTasks; // Thêm trường này
+    private SortedList<LinkTasksAndCalModel> sortedTasks; // Thêm trường này
     private ProgressBar completionProgressBar = new ProgressBar(0);
     private Label completionLabel = new Label("0/0");
     private DateTimeFormatter dateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm dd/MM/yyyy", new java.util.Locale("vi", "VN"));
     private CalendarApp calendarApp;
     private VBox notificationArea;
+    public  ComboBox<String> sortCombo; // Thêm trường này
+
 
     @Override
     public void start(Stage primaryStage) {
@@ -55,15 +64,44 @@ public class Tasks extends Application {
         VBox centerLayout = new VBox(10);
         centerLayout.setPadding(new Insets(10));
         notificationArea = createNotificationArea();
+
+        // Thiết lập FilteredList và SortedList
+        filteredTasks = new FilteredList<>(sharedTasks, p -> true);
+        sortedTasks = new SortedList<>(filteredTasks);
+        taskListView.setItems(sortedTasks);
+
         // Add search field
         TextField searchField = new TextField();
         searchField.setPromptText("Search tasks...");
         searchField.setStyle("-fx-background-color: #F5F8FA; -fx-border-color: #B0BEC5; -fx-border-radius: 4; -fx-padding: 8;");
+
+// Trong phương thức start
         searchField.textProperty().addListener((obs, oldVal, newVal) -> {
-            taskListView.setItems(sharedTasks.filtered(task ->
-                    task.getTitle().toLowerCase().contains(newVal.toLowerCase()) ||
-                            task.getDescription().toLowerCase().contains(newVal.toLowerCase())));
+            filteredTasks.setPredicate(task -> {
+                if (newVal == null || newVal.trim().isEmpty()) {
+                    return true; // Hiển thị tất cả khi không có từ khóa
+                }
+                // Chuẩn hóa chuỗi tìm kiếm và loại bỏ dấu
+                String searchText = Normalizer.normalize(newVal.trim(), Normalizer.Form.NFD)
+                        .replaceAll("\\p{M}", "")
+                        .toLowerCase();
+                String title = task.getTitle() != null
+                        ? Normalizer.normalize(task.getTitle(), Normalizer.Form.NFD)
+                        .replaceAll("\\p{M}", "")
+                        .toLowerCase()
+                        : "";
+                String description = task.getDescription() != null
+                        ? Normalizer.normalize(task.getDescription(), Normalizer.Form.NFD)
+                        .replaceAll("\\p{M}", "")
+                        .toLowerCase()
+                        : "";
+                return title.contains(searchText) || description.contains(searchText);
+            });
+            if (sortCombo != null) {
+                sortTasks(sortCombo.getValue());
+            }
         });
+
         centerLayout.getChildren().addAll(searchField, notificationArea, taskListView, createProgressBarAndLabel());
         mainLayout.setCenter(centerLayout);
 
@@ -71,13 +109,26 @@ public class Tasks extends Application {
         updateCompletionProgress();
         setupNotificationCheck();
 
+// Thêm listener sau khi sortCombo được khởi tạo
+        sharedTasks.addListener((ListChangeListener<LinkTasksAndCalModel>) c -> {
+            Platform.runLater(() -> {
+                updateCompletionProgress();
+                checkOverdueTasks();
+                // Đảm bảo sortTasks được gọi, sử dụng giá trị mặc định nếu sortCombo là null
+                String sortValue = (sortCombo != null && sortCombo.getValue() != null) ? sortCombo.getValue() : "Title (A-Z)";
+                sortTasks(sortValue);
+                if (calendarApp != null) {
+                    calendarApp.updateTasks(sharedTasks); // Đồng bộ với CalendarApp
+                }
+            });
+        });
+
         taskListView.setOnDragDetected(event -> {
-            if (taskListView.getSelectionModel().getSelectedItem() == null) {
-                return;
-            }
+            if (taskListView.getSelectionModel().getSelectedItem() == null) return;
             Dragboard db = taskListView.startDragAndDrop(TransferMode.MOVE);
             ClipboardContent content = new ClipboardContent();
-            content.putString(String.valueOf(taskListView.getSelectionModel().getSelectedIndex()));
+            LinkTasksAndCalModel selectedTask = taskListView.getSelectionModel().getSelectedItem();
+            content.putString(String.valueOf(selectedTask.getId())); // Sử dụng taskId
             db.setContent(content);
             event.consume();
         });
@@ -97,14 +148,15 @@ public class Tasks extends Application {
                 LinkTasksAndCalModel draggedTask = sharedTasks.get(draggedIndex);
                 int dropIndex = taskListView.getItems().indexOf(event.getGestureTarget() instanceof TaskListCell ?
                         ((TaskListCell) event.getGestureTarget()).getItem() : draggedTask);
-
                 if (dropIndex < 0 || dropIndex >= sharedTasks.size()) {
                     dropIndex = sharedTasks.size() - 1;
                 }
-
                 sharedTasks.remove(draggedIndex);
                 sharedTasks.add(dropIndex, draggedTask);
                 success = true;
+                if (calendarApp != null) {
+                    calendarApp.updateTasks(sharedTasks);
+                }
             }
             event.setDropCompleted(success);
             event.consume();
@@ -113,7 +165,6 @@ public class Tasks extends Application {
         taskListView.setOnDragDone(DragEvent::consume);
 
         Scene scene = new Scene(mainLayout, 600, 600);
-        // Add Ctrl+N shortcut
         scene.setOnKeyPressed(e -> {
             if (e.getCode() == KeyCode.N && e.isControlDown()) {
                 showAddEditTaskDialog(null);
@@ -186,7 +237,7 @@ public class Tasks extends Application {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        ComboBox<String> sortCombo = new ComboBox<>();
+        sortCombo = new ComboBox<>(); // Gán giá trị cho trường
         sortCombo.getItems().addAll("Default", "By Title", "By Deadline", "By Priority");
         sortCombo.setValue("Default");
         styleComboBox(sortCombo);
@@ -246,30 +297,29 @@ public class Tasks extends Application {
         return box;
     }
 
-    private void sortTasks(String sort) {
-        ObservableList<LinkTasksAndCalModel> sortedTasks = taskListView.getItems();
+    public void sortTasks(String sort) {
         switch (sort) {
             case "By Title":
-                sortedTasks.sort((t1, t2) -> t1.getTitle().compareToIgnoreCase(t2.getTitle()));
+                sortedTasks.setComparator((t1, t2) -> t1.getTitle().compareToIgnoreCase(t2.getTitle()));
                 break;
             case "By Deadline":
-                sortedTasks.sort((t1, t2) -> {
+                sortedTasks.setComparator((t1, t2) -> {
                     LocalDateTime d1 = t1.getEndTime() != null ? t1.getEndTime() : LocalDateTime.MAX;
                     LocalDateTime d2 = t2.getEndTime() != null ? t2.getEndTime() : LocalDateTime.MAX;
                     return d1.compareTo(d2);
                 });
                 break;
             case "By Priority":
-                sortedTasks.sort((t1, t2) -> {
+                sortedTasks.setComparator((t1, t2) -> {
                     int p1 = getPriorityValue(t1.getPriority());
                     int p2 = getPriorityValue(t2.getPriority());
-                    return Integer.compare(p2, p1); // High to Low
+                    return Integer.compare(p2, p1); // Cao đến thấp
                 });
                 break;
             default:
+                sortedTasks.setComparator(null); // Không sắp xếp
                 break;
         }
-        taskListView.setItems(FXCollections.observableArrayList(sortedTasks));
     }
 
     private int getPriorityValue(String priority) {
@@ -413,7 +463,6 @@ public class Tasks extends Application {
 
             try {
                 if (finalTaskToEdit == null) {
-                    // Thêm nhiệm vụ mới
                     LinkTasksAndCalModel newTask = new LinkTasksAndCalModel();
                     newTask.setTitle(title);
                     newTask.setDescription(descriptionArea.getText());
@@ -426,36 +475,28 @@ public class Tasks extends Application {
                     newTask.setRecurrence(recurrenceCombo.getValue());
                     newTask.setPriority(priorityCombo.getValue());
 
-
-                    System.out.println("Đang lưu nhiệm vụ từ giao diện với tiêu đề: " + newTask.getTitle()); // Log để debug
+                    System.out.println("Đang lưu nhiệm vụ từ giao diện với tiêu đề: " + newTask.getTitle());
                     DAOTasks.getInstance().saveTaskToDatabase(newTask, true);
                     sharedTasks.add(newTask);
-
                 } else {
-                    // Chỉ cập nhật các trường đã thay đổi
                     LinkTasksAndCalModel updatedTask = new LinkTasksAndCalModel();
                     updatedTask.setId(finalTaskToEdit.getId());
 
-                    // So sánh và chỉ gán các trường đã thay đổi
                     updatedTask.setTitle(!title.equals(finalTaskToEdit.getTitle()) ? title : null);
                     String description = descriptionArea.getText();
                     updatedTask.setDescription(description != null && !description.equals(finalTaskToEdit.getDescription()) ? description : null);
                     updatedTask.setStartTime(startTime != null && !startTime.equals(finalTaskToEdit.getStartTime()) ? startTime : null);
                     updatedTask.setEndTime(endTime != null && !endTime.equals(finalTaskToEdit.getEndTime()) ? endTime : null);
-                    // Giữ nguyên giá trị cũ nếu không thay đổi
                     updatedTask.setDuration(durationSpinner.getValue() != finalTaskToEdit.getDuration() ? durationSpinner.getValue() : finalTaskToEdit.getDuration());
                     updatedTask.setTimeSpentHours(timeSpentHoursSpinner.getValue() != finalTaskToEdit.getTimeSpentHours() ? timeSpentHoursSpinner.getValue() : finalTaskToEdit.getTimeSpentHours());
                     updatedTask.setTimeSpentMinutes(timeSpentMinutesSpinner.getValue() != finalTaskToEdit.getTimeSpentMinutes() ? timeSpentMinutesSpinner.getValue() : finalTaskToEdit.getTimeSpentMinutes());
-                    String recurrence = recurrenceCombo.getValue();
-                    updatedTask.setRecurrence(recurrence != null && !recurrence.equals(finalTaskToEdit.getRecurrence()) ? recurrence : null);
-                    String priority = priorityCombo.getValue();
-                    updatedTask.setPriority(priority != null && !priority.equals(finalTaskToEdit.getPriority()) ? priority : null);
-                    updatedTask.setCompleted(finalTaskToEdit.isCompleted()); // Giữ nguyên trạng thái hoàn thành
+                    updatedTask.setRecurrence(recurrenceCombo.getValue() != null && !recurrenceCombo.getValue().equals(finalTaskToEdit.getRecurrence()) ? recurrenceCombo.getValue() : null);
+                    updatedTask.setPriority(priorityCombo.getValue() != null && !priorityCombo.getValue().equals(finalTaskToEdit.getPriority()) ? priorityCombo.getValue() : null);
+                    updatedTask.setCompleted(finalTaskToEdit.isCompleted());
 
                     System.out.println("Đang cập nhật nhiệm vụ với ID: " + updatedTask.getId() + ", tiêu đề: [" + title + "]");
                     DAOTasks.getInstance().saveTaskToDatabase(updatedTask, false);
 
-                    // Cập nhật finalTaskToEdit để đồng bộ giao diện
                     finalTaskToEdit.setTitle(title);
                     finalTaskToEdit.setDescription(descriptionArea.getText());
                     finalTaskToEdit.setStartTime(startTime);
@@ -467,24 +508,37 @@ public class Tasks extends Application {
                     finalTaskToEdit.setPriority(priorityCombo.getValue());
 
                     int index = sharedTasks.indexOf(finalTaskToEdit);
-                    if (index >= 0) sharedTasks.set(index, finalTaskToEdit);
+                    if (index >= 0) {
+                        sharedTasks.set(index, finalTaskToEdit);
+                    } else {
+                        System.out.println("Lỗi: Không tìm thấy task trong sharedTasks để cập nhật!");
+                    }
+                }
+
+                // Làm mới giao diện sau khi lưu
+                Platform.runLater(() -> {
+                    updateCompletionProgress();
+                    checkOverdueTasks();
+                    if (sortCombo != null) {
+                        sortTasks(sortCombo.getValue());
+                    }
+                    if (calendarApp != null) {
+                        calendarApp.updateTasks(sharedTasks);
+                    }
+                });
+                dialogStage.close();
+            } catch (RuntimeException ex) {
+                Alert alert = new Alert(Alert.AlertType.ERROR);
+                alert.setTitle("Lỗi");
+                if (ex.getCause() instanceof SQLException && ex.getMessage().contains("UK_Title")) {
+                    alert.setHeaderText("Tiêu đề nhiệm vụ trùng lặp");
+                    alert.setContentText("Nhiệm vụ với tiêu đề " + title + " đã tồn tại. Vui lòng chọn tiêu đề khác.");
+                } else {
+                    alert.setHeaderText("Lỗi khi lưu nhiệm vụ");
+                    alert.setContentText("Đã xảy ra lỗi: " + ex.getMessage());
+                }
+                alert.showAndWait();
             }
-            updateCompletionProgress();
-            checkOverdueTasks();
-            if (startTime != null && calendarApp != null) calendarApp.setCurrentDate(startTime.toLocalDate());
-            dialogStage.close();
-        } catch (RuntimeException ex) {
-            Alert alert = new Alert(Alert.AlertType.ERROR);
-            alert.setTitle("Lỗi");
-            if (ex.getCause() instanceof SQLException && ex.getMessage().contains("UK_Title")) {
-                alert.setHeaderText("Tiêu đề nhiệm vụ trùng lặp");
-                alert.setContentText("Nhiệm vụ với tiêu đề " + title + " đã tồn tại. Vui lòng chọn tiêu đề khác.");
-            } else {
-                alert.setHeaderText("Lỗi khi lưu nhiệm vụ");
-                alert.setContentText("Đã xảy ra lỗi: " + ex.getMessage());
-            }
-            alert.showAndWait();
-        }
         });
 
         cancelButton.setOnAction(e -> dialogStage.close());
@@ -688,6 +742,13 @@ public class Tasks extends Application {
                 event.consume();
             });
 
+            setOnDragOver(event -> {
+                if (event.getGestureSource() != this && event.getDragboard().hasString()) {
+                    event.acceptTransferModes(TransferMode.MOVE);
+                }
+                event.consume();
+            });
+
             setOnDragDropped(event -> {
                 Dragboard db = event.getDragboard();
                 boolean success = false;
@@ -695,6 +756,9 @@ public class Tasks extends Application {
                     int draggedIndex = Integer.parseInt(db.getString());
                     LinkTasksAndCalModel draggedTask = sharedTasks.get(draggedIndex);
                     int dropIndex = sharedTasks.indexOf(getItem());
+                    if (dropIndex < 0 || dropIndex >= sharedTasks.size()) {
+                        dropIndex = sharedTasks.size() - 1;
+                    }
                     sharedTasks.remove(draggedIndex);
                     sharedTasks.add(dropIndex, draggedTask);
                     success = true;
