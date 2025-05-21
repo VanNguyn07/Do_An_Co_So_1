@@ -2,6 +2,7 @@ package LinkTasksAndCal;
 
 import javafx.beans.property.*;
 import java.time.LocalDateTime;
+import java.util.Objects;
 
 public class LinkTasksAndCalModel {
     private final IntegerProperty id = new SimpleIntegerProperty(-1); // Sử dụng int, -1 là giá trị mặc định khi chưa có id
@@ -174,5 +175,17 @@ public class LinkTasksAndCalModel {
 
     public void setPriority(String priority) {
         this.priority.set(priority);
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (o == null || getClass() != o.getClass()) return false;
+        LinkTasksAndCalModel that = (LinkTasksAndCalModel) o;
+        return Objects.equals(getId(), that.getId());
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(getId());
     }
 }
