@@ -4,6 +4,8 @@ import LinkTasksAndCal.LinkTasksAndCalModel;
 import Tasks.Tasks;
 import javafx.animation.AnimationTimer;
 import javafx.application.Application;
+import javafx.application.Platform;
+import javafx.collections.ObservableList;
 import javafx.geometry.HPos;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
@@ -219,15 +221,22 @@ public class CalendarApp extends Application {
     }
 
     private StackPane createDayPane(int day, LocalDate date, boolean isCurrentMonth) {
+        System.out.println("Day: " + day + ", Date: " + date + ", IsCurrentMonth: " + isCurrentMonth + ", Today: " + LocalDate.now(ZoneId.of("GMT+7")));
         StackPane dayPane = new StackPane();
-        Button dayButton = new Button(String.valueOf(day));
-        dayButton.setFont(Font.font("Arial", 14));
+        Button dayButton = new Button(String.valueOf(day));// Đảm bảo hiển thị số ngày
+        dayButton.setFont(Font.font("Arial", 11));
         dayButton.setTextFill(isCurrentMonth ? Color.web("#2D3E50") : Color.web("#A9B5BB"));
         dayButton.setBackground(new Background(new BackgroundFill(Color.web("#F5F8FA"), new CornerRadii(50), null)));
         dayButton.setBorder(new Border(new BorderStroke(Color.TRANSPARENT, BorderStrokeStyle.SOLID, new CornerRadii(50), new BorderWidths(2))));
-        dayButton.setPrefSize(40, 40);
+        dayButton.setPrefSize(45, 45); // Tăng kích thước để hiển thị tốt hơn
+        dayButton.setMinSize(45, 45); // Đảm bảo kích thước tối thiểu
+        dayButton.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE); // Cho phép mở rộng
         dayButton.setAlignment(Pos.CENTER);
 
+        // In nội dung trước khi thêm badge hoặc hiệu ứng
+        System.out.println("Before adjustments - DayButton text: " + dayButton.getText());
+
+// Thêm badge nếu có nhiệm vụ
         long taskCount = Tasks.sharedTasks.stream()
                 .filter(task -> task.getStartTime() != null && task.getStartTime().toLocalDate().equals(date))
                 .count();
@@ -235,11 +244,13 @@ public class CalendarApp extends Application {
             Label badge = new Label(String.valueOf(taskCount));
             badge.setStyle("-fx-background-color: #FFCA28; -fx-background-radius: 10; -fx-padding: 2 4; -fx-font-size: 10; -fx-text-fill: #2D3E50;");
             StackPane.setAlignment(badge, Pos.TOP_RIGHT);
+            StackPane.setMargin(badge, new Insets(2, 2, 0, 0));
             dayPane.getChildren().addAll(dayButton, badge);
         } else {
             dayPane.getChildren().add(dayButton);
         }
 
+// Thêm tooltip nếu có nhiệm vụ
         String taskTitles = Tasks.sharedTasks.stream()
                 .filter(task -> task.getStartTime() != null && task.getStartTime().toLocalDate().equals(date))
                 .map(LinkTasksAndCalModel::getTitle)
@@ -250,15 +261,25 @@ public class CalendarApp extends Application {
             Tooltip.install(dayPane, tooltip);
         }
 
-        if (date.equals(LocalDate.now(ZoneId.of("GMT+7")))) {
+        // Đánh dấu ngày hiện tại (03:43 PM +07, 21/05/2025)
+        LocalDate today = LocalDate.now(ZoneId.of("GMT+7"));
+        if (date.equals(today)) {
             dayButton.setBackground(new Background(new BackgroundFill(Color.web("#A3BFFA"), new CornerRadii(50), null)));
             dayButton.setTextFill(Color.WHITE);
+            dayButton.setText(String.valueOf(day)); // Đảm bảo hiển thị "21"
+            System.out.println("Today detected: Setting day to " + dayButton.getText());
         }
+
+        // Đánh dấu ngày được chọn (currentDate)
         if (date.equals(currentDate)) {
             dayButton.setBackground(new Background(new BackgroundFill(Color.web("#4C7C8A"), new CornerRadii(50), null)));
             dayButton.setTextFill(Color.WHITE);
             dayButton.setFont(Font.font("Arial", FontWeight.BOLD, 14));
+            dayButton.setText(String.valueOf(day)); // Đảm bảo hiển thị số ngày
         }
+
+        // In nội dung sau khi áp dụng tất cả thay đổi
+        System.out.println("After adjustments - DayButton text: " + dayButton.getText());
 
         dayButton.setOnAction(e -> {
             currentDate = date;
@@ -328,27 +349,45 @@ public class CalendarApp extends Application {
                 }
                 event.consume();
             });
+
             eventsBox.setOnDragDropped(event -> {
                 Dragboard db = event.getDragboard();
                 boolean success = false;
                 if (db.hasString()) {
                     String taskId = db.getString();
                     LinkTasksAndCalModel taskToMove = Tasks.sharedTasks.stream()
-                            .filter(t -> t.getId().equals(taskId))
+                            .filter(t -> taskId.equals(String.valueOf(t.getId())))
                             .findFirst()
                             .orElse(null);
                     if (taskToMove != null) {
-                        int newHour = hoursBox.getChildren().indexOf(hourRow) - 1;
+                        int newHour = hoursBox.getChildren().indexOf(hourRow) - 1; // -1 vì có hàng "All Day"
                         LocalDateTime newStartTime = LocalDateTime.of(
-                                taskToMove.getStartTime().toLocalDate(),
+                                currentDate, // Sử dụng ngày hiện tại trong lịch
                                 LocalTime.of(newHour, taskToMove.getStartTime().toLocalTime().getMinute())
                         );
                         taskToMove.setStartTime(newStartTime);
                         if (taskToMove.getEndTime() != null && taskToMove.getEndTime().isBefore(newStartTime)) {
                             taskToMove.setEndTime(newStartTime.plusHours(1));
                         }
+
+                        // Cập nhật task trong sharedTasks
+                        int index = Tasks.sharedTasks.indexOf(taskToMove);
+                        if (index >= 0) {
+                            Tasks.sharedTasks.set(index, taskToMove);
+                            // Làm mới giao diện Tasks chính (nếu đang mở)
+                            if (Tasks.getMainStage() != null) {
+                                Tasks.getMainStage().requestFocus(); // Đưa giao diện Tasks lên trước
+                                // Giả sử Tasks có phương thức làm mới, gọi thông qua instance
+                                // (Cần thêm logic trong Tasks để hỗ trợ)
+                            }
+                        } else {
+                            System.out.println("Lỗi: Không tìm thấy task trong sharedTasks để cập nhật sau khi kéo-thả!");
+                        }
+
                         success = true;
-                        updateEventsDisplay(hoursBox);
+                        updateEventsDisplay(hoursBox); // Làm mới giao diện lịch
+                    } else {
+                        System.out.println("Lỗi: Không tìm thấy task với ID " + taskId);
                     }
                 }
                 event.setDropCompleted(success);
@@ -655,6 +694,22 @@ public class CalendarApp extends Application {
     public static Stage getCalendarStage() {
         return calendarStage;
     }
+
+    public void updateTasks(ObservableList<LinkTasksAndCalModel> tasks) {
+        // Làm mới giao diện lịch khi danh sách tasks thay đổi
+        BorderPane root = (BorderPane) dateText.getScene().getRoot();
+        if (root != null) {
+            ScrollPane scrollPane = (ScrollPane) root.getCenter();
+            if (scrollPane != null) {
+                StackPane contentPane = (StackPane) scrollPane.getContent();
+                if (contentPane != null) {
+                    VBox hoursBox = (VBox) contentPane.getChildren().get(1);
+                    updateEventsDisplay(hoursBox);
+                }
+            }
+        }
+    }
+
 
     public static void main(String[] args) {
         launch(args);
