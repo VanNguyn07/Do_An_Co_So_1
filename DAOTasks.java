@@ -6,6 +6,8 @@ import javafx.collections.FXCollections;
 import javafx.collections.ObservableList;
 
 import java.sql.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class DAOTasks implements DAOInterfaceTasks<LinkTasksAndCalModel> {
 
@@ -196,6 +198,45 @@ public class DAOTasks implements DAOInterfaceTasks<LinkTasksAndCalModel> {
         }
         return false;
     }
+
+    @Override
+    public List<LinkTasksAndCalModel> searchTasksByTitle(String title) {
+        List<LinkTasksAndCalModel> tasks = new ArrayList<>();
+        String query = "SELECT * FROM Table_Tasks WHERE Title LIKE ?";
+
+        try (Connection connection = ConnectionJDBC.getConnection();
+             PreparedStatement stmt = connection.prepareStatement(query)) {
+                stmt.setString(1,  "%" + title + "%");
+
+            ResultSet rs = stmt.executeQuery();
+            while (rs.next()) {
+                LinkTasksAndCalModel task = new LinkTasksAndCalModel();
+
+                task.setId(rs.getInt("ID"));
+                task.setTitle(rs.getString("Title"));
+                task.setDescription(rs.getString("Description"));
+                task.setStartTime(rs.getTimestamp("StartTime") != null ?
+                        rs.getTimestamp("StartTime").toLocalDateTime() : null);
+                task.setEndTime(rs.getTimestamp("EndTime") != null ?
+                        rs.getTimestamp("EndTime").toLocalDateTime() : null);
+                task.setCompleted(rs.getBoolean("Completed"));
+                task.setDuration(rs.getInt("Duration"));
+                task.setTimeSpentHours(rs.getInt("TimeSpentHours"));
+                task.setTimeSpentMinutes(rs.getInt("TimeSpentMinutes"));
+                task.setRecurrence(rs.getString("Recurrence"));
+                task.setPriority(rs.getString("Priority"));
+
+                tasks.add(task);
+            }
+            System.out.println(tasks.size() + " task(s) found matching title: " + title);
+        } catch (SQLException e) {
+            e.printStackTrace();
+            throw new RuntimeException("Lỗi khi tìm kiếm nhiệm vụ: " + e.getMessage());
+        }
+        return tasks;
+    }
+
+
 
 }
 
